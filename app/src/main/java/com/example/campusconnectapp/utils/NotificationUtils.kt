@@ -12,6 +12,9 @@ import com.example.campusconnectapp.MainActivity
 
 object NotificationUtils {
     fun showAnnouncementNotification(context: Context, title: String, content: String) {
+        if (!AppPreferencesManager.getInstance(context).isNotificationsEnabled()) {
+            return
+        }
         val channelId = "announcements_channel"
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 

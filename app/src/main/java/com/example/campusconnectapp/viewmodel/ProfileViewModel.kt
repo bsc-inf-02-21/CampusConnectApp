@@ -8,6 +8,7 @@ import com.example.campusconnectapp.data.AppDatabase
 import com.example.campusconnectapp.data.UserEntity
 import com.example.campusconnectapp.data.UserProfile
 import com.example.campusconnectapp.data.UserRole
+import com.example.campusconnectapp.utils.AppPreferencesManager
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -73,6 +74,55 @@ object ValidationUtils {
 
         return null
     }
+
+    /**
+     * Validates a Malawi phone number:
+     * - Must contain digits only
+     * - Must start with 098, 099, or 088
+     * - Must be exactly 10 digits long
+     */
+    fun isValidPhoneNumber(phone: String): Boolean {
+        val trimmed = phone.trim()
+        if (trimmed.length != 10) return false
+        if (!trimmed.all { it.isDigit() }) return false
+        val prefix = trimmed.take(3)
+        return prefix == "098" || prefix == "099" || prefix == "088"
+    }
+
+    /**
+     * Validates contact details (Email or Phone Number):
+     * If phone: must start with 098, 099, or 088 and be exactly 10 digits.
+     * If email: must be a valid email format.
+     */
+    fun validateContact(contact: String): String? {
+        val trimmed = contact.trim()
+        if (trimmed.isBlank()) {
+            return "Contact detail is required."
+        }
+
+        // If contact starts with a digit or contains no '@', validate as phone number
+        if (trimmed.first().isDigit() || !trimmed.contains("@")) {
+            if (!trimmed.all { it.isDigit() }) {
+                return "Phone number must contain digits only."
+            }
+            if (trimmed.length != 10) {
+                return "Phone number must be exactly 10 digits (e.g., 0981234567, 0991234567, or 0881234567)."
+            }
+            val prefix = trimmed.substring(0, 3)
+            if (prefix != "098" && prefix != "099" && prefix != "088") {
+                return "Phone number must start with 098, 099, or 088 (e.g., 0981234567)."
+            }
+            return null // Valid phone number
+        }
+
+        // Validate as Email address
+        val emailPattern = Regex("^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$")
+        if (!emailPattern.matches(trimmed)) {
+            return "Please enter a valid email address or phone number (e.g., 098XXXXXXX, 099XXXXXXX, 088XXXXXXX)."
+        }
+
+        return null // Valid email
+    }
 }
 
 private fun String.capitalizeWords(): String {
@@ -83,6 +133,11 @@ private fun String.capitalizeWords(): String {
 
 class ProfileViewModel(application: Application) : AndroidViewModel(application) {
     private val userDao = AppDatabase.getDatabase(application).userDao()
+    private val prefsManager = AppPreferencesManager.getInstance(application)
+
+    val notificationsEnabled: StateFlow<Boolean> = prefsManager.notificationsEnabled
+    val realtimeSyncEnabled: StateFlow<Boolean> = prefsManager.realtimeSyncEnabled
+
     private val auth: FirebaseAuth? = try {
         FirebaseAuth.getInstance()
     } catch (e: Exception) {
@@ -101,6 +156,14 @@ class ProfileViewModel(application: Application) : AndroidViewModel(application)
 
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
+
+    fun setNotificationsEnabled(enabled: Boolean) {
+        prefsManager.setNotificationsEnabled(enabled)
+    }
+
+    fun setRealtimeSyncEnabled(enabled: Boolean) {
+        prefsManager.setRealtimeSyncEnabled(enabled)
+    }
 
     init {
         // Auto-restore cached user from local Room DB on app launch, and fetch latest from Firestore
@@ -141,16 +204,18 @@ class ProfileViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun reauthenticateFirebase(email: String, pass: String) {
-        if (auth == null || auth.currentUser != null) return
-        try {
-            auth.signInWithEmailAndPassword(email, pass)
-                .addOnFailureListener {
-                    if (auth.currentUser == null) {
-                        try { auth.signInAnonymously() } catch (e: Exception) {}
+        if (auth == null) return
+        if (auth.currentUser == null || auth.currentUser?.isAnonymous == true || auth.currentUser?.email != email) {
+            try {
+                auth.signInWithEmailAndPassword(email, pass)
+                    .addOnFailureListener {
+                        if (auth.currentUser == null) {
+                            try { auth.signInAnonymously() } catch (e: Exception) {}
+                        }
                     }
-                }
-        } catch (e: Exception) {
-            Log.e("ProfileViewModel", "Reauth error", e)
+            } catch (e: Exception) {
+                Log.e("ProfileViewModel", "Reauth error", e)
+            }
         }
     }
 
@@ -256,12 +321,14 @@ class ProfileViewModel(application: Application) : AndroidViewModel(application)
                     // Background Firebase fetch & sync (non-blocking)
                     launch {
                         if (auth != null) {
-                            if (auth.currentUser == null) {
-                                auth.signInAnonymously().addOnSuccessListener {
-                                    fetchFirestoreProfileAndSync(localUser.uid, password, profile)
-                                }.addOnFailureListener {
-                                    saveProfileToFirestore(profile)
-                                }
+                            if (auth.currentUser == null || auth.currentUser?.isAnonymous == true || auth.currentUser?.email != trimmedEmail) {
+                                auth.signInWithEmailAndPassword(trimmedEmail, password)
+                                    .addOnSuccessListener {
+                                        fetchFirestoreProfileAndSync(localUser.uid, password, profile)
+                                    }
+                                    .addOnFailureListener {
+                                        fetchFirestoreProfileAndSync(localUser.uid, password, profile)
+                                    }
                             } else {
                                 fetchFirestoreProfileAndSync(localUser.uid, password, profile)
                             }

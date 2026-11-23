@@ -8,10 +8,11 @@ import com.example.campusconnectapp.data.AppDatabase
 import com.example.campusconnectapp.data.ItemType
 import com.example.campusconnectapp.data.LostItem
 import com.example.campusconnectapp.data.LostItemEntity
+import com.example.campusconnectapp.utils.AppPreferencesManager
+import com.google.firebase.Timestamp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
-import com.google.firebase.firestore.Query
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -22,9 +23,15 @@ class LostFoundViewModel(application: Application) : AndroidViewModel(applicatio
 
     private val lostFoundDao = AppDatabase.getDatabase(application).lostFoundDao()
     private val db = try { FirebaseFirestore.getInstance() } catch (e: Exception) { null }
-    private val collection = db?.collection("lost_found_items")
+    private val collection = db?.collection("lost_items")
     private val auth = try { FirebaseAuth.getInstance() } catch (e: Exception) { null }
     private var snapshotListenerRegistration: ListenerRegistration? = null
+
+    private val authStateListener = FirebaseAuth.AuthStateListener {
+        if (AppPreferencesManager.getInstance(getApplication()).isRealtimeSyncEnabled()) {
+            listenToLostFoundItemsRealtime()
+        }
+    }
 
     private val _itemsList = MutableStateFlow<List<LostItem>>(emptyList())
     val itemsList: StateFlow<List<LostItem>> = _itemsList.asStateFlow()
@@ -32,19 +39,41 @@ class LostFoundViewModel(application: Application) : AndroidViewModel(applicatio
     init {
         // Load offline cached items from Room DB first
         loadOfflineCachedItems()
-        // Ensure active Firebase session, then listen to Firestore real-time
-        ensureAuthAndListen()
+        // Listen to auth state changes to ensure instant sync when user signs in/out
+        try { auth?.addAuthStateListener(authStateListener) } catch (e: Exception) {}
+        // Listen to user setting preference for real-time background sync
+        viewModelScope.launch {
+            AppPreferencesManager.getInstance(getApplication()).realtimeSyncEnabled.collect { isEnabled ->
+                if (isEnabled) {
+                    ensureAuthAndListen()
+                } else {
+                    snapshotListenerRegistration?.remove()
+                    snapshotListenerRegistration = null
+                    loadOfflineCachedItems()
+                }
+            }
+        }
     }
 
     private fun ensureAuthAndListen() {
+        if (!AppPreferencesManager.getInstance(getApplication()).isRealtimeSyncEnabled()) {
+            snapshotListenerRegistration?.remove()
+            snapshotListenerRegistration = null
+            loadOfflineCachedItems()
+            return
+        }
         if (auth == null) {
             loadOfflineCachedItems()
             return
         }
         if (auth.currentUser == null) {
-            auth.signInAnonymously().addOnCompleteListener {
-                listenToLostFoundItemsRealtime()
-            }
+            auth.signInAnonymously()
+                .addOnSuccessListener {
+                    listenToLostFoundItemsRealtime()
+                }
+                .addOnFailureListener {
+                    listenToLostFoundItemsRealtime()
+                }
         } else {
             listenToLostFoundItemsRealtime()
         }
@@ -63,7 +92,7 @@ class LostFoundViewModel(application: Application) : AndroidViewModel(applicatio
                         lostFoundDao.insertLostItems(realEntities)
                     }
                 }
-                _itemsList.value = realEntities.map { it.toLostItem() }
+                _itemsList.value = realEntities.map { it.toLostItem() }.sortedByDescending { it.date }
             } catch (e: Exception) {
                 Log.e("LostFoundViewModel", "Error loading offline lost & found items", e)
             }
@@ -74,21 +103,10 @@ class LostFoundViewModel(application: Application) : AndroidViewModel(applicatio
         snapshotListenerRegistration?.remove()
         if (collection == null) return
         snapshotListenerRegistration = collection
-            .orderBy("date", Query.Direction.DESCENDING)
             .addSnapshotListener { snapshot, error ->
                 if (error != null) {
                     Log.e("LostFoundViewModel", "Error listening to Firestore lost/found items: ${error.localizedMessage}", error)
-                    if (auth == null || auth.currentUser == null) {
-                        try {
-                            auth?.signInAnonymously()?.addOnCompleteListener {
-                                listenToLostFoundItemsRealtime()
-                            } ?: loadOfflineCachedItems()
-                        } catch (e: Exception) {
-                            loadOfflineCachedItems()
-                        }
-                    } else {
-                        loadOfflineCachedItems()
-                    }
+                    loadOfflineCachedItems()
                     return@addSnapshotListener
                 }
 
@@ -100,7 +118,13 @@ class LostFoundViewModel(application: Application) : AndroidViewModel(applicatio
                             val category = doc.getString("category") ?: "General"
                             val description = doc.getString("description") ?: ""
                             val location = doc.getString("location") ?: ""
-                            val date = doc.getLong("date") ?: System.currentTimeMillis()
+                            val date = when (val rawDate = doc.get("date")) {
+                                is Long -> rawDate
+                                is Number -> rawDate.toLong()
+                                is Timestamp -> rawDate.seconds * 1000
+                                is String -> rawDate.toLongOrNull() ?: System.currentTimeMillis()
+                                else -> System.currentTimeMillis()
+                            }
                             val typeStr = doc.getString("type") ?: ItemType.LOST.name
                             val type = try { ItemType.valueOf(typeStr) } catch (e: Exception) { ItemType.LOST }
                             val contact = doc.getString("contact") ?: ""
@@ -120,7 +144,7 @@ class LostFoundViewModel(application: Application) : AndroidViewModel(applicatio
                         }
                     }
 
-                    _itemsList.value = list
+                    _itemsList.value = list.sortedByDescending { it.date }
 
                     // Cache real items to local Room database
                     viewModelScope.launch {
@@ -250,5 +274,6 @@ class LostFoundViewModel(application: Application) : AndroidViewModel(applicatio
     override fun onCleared() {
         super.onCleared()
         snapshotListenerRegistration?.remove()
+        try { auth?.removeAuthStateListener(authStateListener) } catch (e: Exception) {}
     }
 }

@@ -42,9 +42,16 @@ import java.util.*
 @Composable
 fun ProfileScreen(viewModel: ProfileViewModel) {
     val profile by viewModel.userProfile.collectAsState()
+    val notificationsEnabled by viewModel.notificationsEnabled.collectAsState()
+    val realtimeSyncEnabled by viewModel.realtimeSyncEnabled.collectAsState()
+
     profile?.let { currentProfile ->
         ProfileScreen(
             profile = currentProfile,
+            notificationsEnabled = notificationsEnabled,
+            realtimeSyncEnabled = realtimeSyncEnabled,
+            onToggleNotifications = { viewModel.setNotificationsEnabled(it) },
+            onToggleRealtimeSync = { viewModel.setRealtimeSyncEnabled(it) },
             onUpdateProfile = { name, dept, email, avatar -> viewModel.updateProfile(name, dept, email, avatar) },
             onSendFeedback = { msg, cb -> viewModel.sendFeedback(msg, cb) },
             onLogout = { viewModel.logout() }
@@ -55,6 +62,10 @@ fun ProfileScreen(viewModel: ProfileViewModel) {
 @Composable
 fun ProfileScreen(
     profile: UserProfile,
+    notificationsEnabled: Boolean = true,
+    realtimeSyncEnabled: Boolean = true,
+    onToggleNotifications: (Boolean) -> Unit = {},
+    onToggleRealtimeSync: (Boolean) -> Unit = {},
     onUpdateProfile: (String, String, String, String?) -> Unit,
     onSendFeedback: (String, (Boolean, String?) -> Unit) -> Unit,
     onLogout: () -> Unit
@@ -314,6 +325,67 @@ fun ProfileScreen(
                     }
                     Text(text = "Department: ${profile.department}", style = MaterialTheme.typography.bodyMedium)
                     Text(text = "Status: Active ${profile.role.name}", style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+        }
+
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    text = "App Background & Data Controls",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Announcement Notifications",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "Receive system notifications when new announcements arrive",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.secondary
+                        )
+                    }
+                    Switch(
+                        checked = notificationsEnabled,
+                        onCheckedChange = onToggleNotifications
+                    )
+                }
+
+                HorizontalDivider()
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Real-Time Background Data Sync",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "Automatically sync announcements & lost items live from Firestore",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.secondary
+                        )
+                    }
+                    Switch(
+                        checked = realtimeSyncEnabled,
+                        onCheckedChange = onToggleRealtimeSync
+                    )
                 }
             }
         }

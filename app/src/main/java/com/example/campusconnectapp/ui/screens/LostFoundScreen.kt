@@ -33,6 +33,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
+import com.example.campusconnectapp.viewmodel.ValidationUtils
 import androidx.core.content.FileProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
@@ -186,7 +187,30 @@ fun LostFoundContent(
                         OutlinedTextField(value = category, onValueChange = { category = it }, label = { Text("Category") }, singleLine = true)
                         OutlinedTextField(value = description, onValueChange = { description = it }, label = { Text("Description") })
                         OutlinedTextField(value = location, onValueChange = { location = it }, label = { Text("Location") }, singleLine = true)
-                        OutlinedTextField(value = contact, onValueChange = { contact = it }, label = { Text("Contact Email / Phone") }, singleLine = true)
+                        OutlinedTextField(
+                            value = contact,
+                            onValueChange = { input ->
+                                if (input.isEmpty()) {
+                                    contact = ""
+                                } else if (input.first().isDigit()) {
+                                    // Restrict to digits only and cap at maximum 10 digits
+                                    val filteredDigits = input.filter { it.isDigit() }
+                                    if (filteredDigits.length <= 10) {
+                                        contact = filteredDigits
+                                    }
+                                } else {
+                                    // Email mode
+                                    contact = input
+                                }
+                            },
+                            label = { Text("Contact Email / Phone") },
+                            singleLine = true,
+                            supportingText = {
+                                if (contact.isNotEmpty() && contact.first().isDigit()) {
+                                    Text("${contact.length}/10 digits • Must start with 098, 099, or 088")
+                                }
+                            }
+                        )
 
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -281,37 +305,46 @@ fun LostFoundContent(
                 confirmButton = {
                     Button(
                         onClick = {
-                            if (title.isNotBlank() && location.isNotBlank()) {
-                                val compressedImageStr = if (!selectedImageUri.isNullOrBlank()) {
-                                    try {
-                                        val uri = Uri.parse(selectedImageUri)
-                                        ImageUtils.uriToBase64(context, uri) ?: selectedImageUri
-                                    } catch (e: Exception) {
-                                        selectedImageUri
-                                    }
-                                } else {
+                            if (title.isBlank() || location.isBlank()) {
+                                Toast.makeText(context, "Please enter Item Title and Location", Toast.LENGTH_SHORT).show()
+                                return@Button
+                            }
+
+                            if (contact.isNotBlank()) {
+                                val contactError = ValidationUtils.validateContact(contact)
+                                if (contactError != null) {
+                                    Toast.makeText(context, contactError, Toast.LENGTH_LONG).show()
+                                    return@Button
+                                }
+                            }
+
+                            val compressedImageStr = if (!selectedImageUri.isNullOrBlank()) {
+                                try {
+                                    val uri = Uri.parse(selectedImageUri)
+                                    ImageUtils.uriToBase64(context, uri)
+                                } catch (e: Exception) {
                                     null
                                 }
-
-                                onAddItem(
-                                    title,
-                                    category,
-                                    description,
-                                    location,
-                                    contact.ifBlank { "student1@unima.ac.mw" },
-                                    itemType,
-                                    compressedImageStr
-                                )
-                                Toast.makeText(context, "Item posted successfully!", Toast.LENGTH_SHORT).show()
-                                title = ""
-                                description = ""
-                                location = ""
-                                contact = ""
-                                selectedImageUri = null
-                                showDialog = false
                             } else {
-                                Toast.makeText(context, "Please enter Item Title and Location", Toast.LENGTH_SHORT).show()
+                                null
                             }
+
+                            onAddItem(
+                                title,
+                                category,
+                                description,
+                                location,
+                                contact.ifBlank { "student1@unima.ac.mw" },
+                                itemType,
+                                compressedImageStr
+                            )
+                            Toast.makeText(context, "Item posted successfully!", Toast.LENGTH_SHORT).show()
+                            title = ""
+                            description = ""
+                            location = ""
+                            contact = ""
+                            selectedImageUri = null
+                            showDialog = false
                         },
                         enabled = title.isNotBlank() && location.isNotBlank()
                     ) {
@@ -340,6 +373,31 @@ fun LostItemCard(
 ) {
     val context = LocalContext.current
     var showFullImageDialog by remember { mutableStateOf(false) }
+    var showHideConfirmationDialog by remember { mutableStateOf(false) }
+
+    if (showHideConfirmationDialog) {
+        AlertDialog(
+            onDismissRequest = { showHideConfirmationDialog = false },
+            title = { Text("Hide Post") },
+            text = { Text("Do you want to hide this post?") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showHideConfirmationDialog = false
+                        onHide()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("Yes")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showHideConfirmationDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
 
     if (showFullImageDialog && !item.imageUrl.isNullOrBlank()) {
         AlertDialog(
@@ -497,7 +555,7 @@ fun LostItemCard(
             if (canHide) {
                 Spacer(modifier = Modifier.height(10.dp))
                 OutlinedButton(
-                    onClick = onHide,
+                    onClick = { showHideConfirmationDialog = true },
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.outlinedButtonColors(
                         contentColor = MaterialTheme.colorScheme.error

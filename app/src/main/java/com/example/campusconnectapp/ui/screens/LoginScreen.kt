@@ -41,6 +41,7 @@ fun LoginScreen(viewModel: ProfileViewModel) {
     )
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LoginContent(
     errorMessage: String? = null,
@@ -50,6 +51,7 @@ fun LoginContent(
     onVerifyAndReset: (String, String, String, (Boolean, String?) -> Unit) -> Unit = { _, _, _, _ -> },
     onClearError: () -> Unit = {}
 ) {
+    val context = LocalContext.current
     var isSignUp by remember { mutableStateOf(false) }
     var showForgotPasswordDialog by remember { mutableStateOf(false) }
 
@@ -63,8 +65,29 @@ fun LoginContent(
 
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    var confirmPassword by remember { mutableStateOf("") }
+    var confirmPasswordVisible by remember { mutableStateOf(false) }
     var fullName by remember { mutableStateOf("") }
     var department by remember { mutableStateOf("") }
+    var departmentExpanded by remember { mutableStateOf(false) }
+    val departments = listOf(
+        "Faculty of Science",
+        "Faculty of Humanities",
+        "Faculty of Social Science",
+        "Faculty of Education",
+        "Faculty of Law",
+        "Department of Computer Science & IT",
+        "Department of Mathematical Sciences",
+        "Department of Biological Sciences",
+        "Department of Chemical Sciences",
+        "Department of Physics and Earth Sciences",
+        "Department of Economics",
+        "Department of Political and Administrative Studies",
+        "Department of Language and Literature",
+        "Department of Historical Studies",
+        "Department of Educational Foundations",
+        "Department of Curriculum and Teaching Studies"
+    )
     var identifier by remember { mutableStateOf("") }
     var staffCode by remember { mutableStateOf("") }
     var selectedRole by remember { mutableStateOf(UserRole.STUDENT) }
@@ -195,13 +218,36 @@ fun LoginContent(
 
                 Spacer(modifier = Modifier.height(12.dp))
 
-                OutlinedTextField(
-                    value = department,
-                    onValueChange = { department = it },
-                    label = { Text("Department / Faculty") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
-                )
+                ExposedDropdownMenuBox(
+                    expanded = departmentExpanded,
+                    onExpandedChange = { departmentExpanded = !departmentExpanded },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    OutlinedTextField(
+                        value = department,
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Department / Faculty") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = departmentExpanded) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .menuAnchor()
+                    )
+                    ExposedDropdownMenu(
+                        expanded = departmentExpanded,
+                        onDismissRequest = { departmentExpanded = false }
+                    ) {
+                        departments.forEach { dept ->
+                            DropdownMenuItem(
+                                text = { Text(dept) },
+                                onClick = {
+                                    department = dept
+                                    departmentExpanded = false
+                                }
+                            )
+                        }
+                    }
+                }
 
                 Spacer(modifier = Modifier.height(12.dp))
 
@@ -281,6 +327,31 @@ fun LoginContent(
                 }
             )
 
+            if (isSignUp) {
+                Spacer(modifier = Modifier.height(12.dp))
+                val isConfirmPasswordInvalid = confirmPassword.isNotBlank() && confirmPassword != password
+                OutlinedTextField(
+                    value = confirmPassword,
+                    onValueChange = { confirmPassword = it },
+                    label = { Text("Confirm Password") },
+                    isError = isConfirmPasswordInvalid,
+                    supportingText = {
+                        if (isConfirmPasswordInvalid) {
+                            Text("Passwords do not match", color = MaterialTheme.colorScheme.error)
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    visualTransformation = if (confirmPasswordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = {
+                        val image = if (confirmPasswordVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff
+                        IconButton(onClick = { confirmPasswordVisible = !confirmPasswordVisible }) {
+                            Icon(imageVector = image, contentDescription = null)
+                        }
+                    }
+                )
+            }
+
             if (errorMessage != null) {
                 Spacer(modifier = Modifier.height(12.dp))
                 Card(
@@ -313,6 +384,10 @@ fun LoginContent(
             Button(
                 onClick = {
                     if (isSignUp) {
+                        if (password != confirmPassword) {
+                            Toast.makeText(context, "Passwords do not match", Toast.LENGTH_SHORT).show()
+                            return@Button
+                        }
                         val profile = UserProfile(
                             uid = "user_" + UUID.randomUUID().toString().take(6),
                             fullName = fullName,

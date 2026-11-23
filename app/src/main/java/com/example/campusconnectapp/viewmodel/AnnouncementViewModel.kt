@@ -9,11 +9,12 @@ import com.example.campusconnectapp.data.AnnouncementEntity
 import com.example.campusconnectapp.data.AppDatabase
 import com.example.campusconnectapp.data.UserProfile
 import com.example.campusconnectapp.data.UserRole
+import com.example.campusconnectapp.utils.AppPreferencesManager
 import com.example.campusconnectapp.utils.NotificationUtils
+import com.google.firebase.Timestamp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
-import com.google.firebase.firestore.Query
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -29,25 +30,53 @@ class AnnouncementViewModel(application: Application) : AndroidViewModel(applica
     private var snapshotListenerRegistration: ListenerRegistration? = null
     private var isInitialLoad = true
 
+    private val authStateListener = FirebaseAuth.AuthStateListener {
+        if (AppPreferencesManager.getInstance(getApplication()).isRealtimeSyncEnabled()) {
+            listenToAnnouncementsRealtime()
+        }
+    }
+
     private val _announcements = MutableStateFlow<List<Announcement>>(emptyList())
     val announcements: StateFlow<List<Announcement>> = _announcements.asStateFlow()
 
     init {
         // Load offline cached announcements from Room DB first
         loadOfflineCachedAnnouncements()
-        // Ensure Firebase session is active, then listen to Firestore real-time
-        ensureAuthAndListen()
+        // Listen to auth state changes to ensure instant sync when user signs in/out
+        try { auth?.addAuthStateListener(authStateListener) } catch (e: Exception) {}
+        // Listen to user setting preference for real-time background sync
+        viewModelScope.launch {
+            AppPreferencesManager.getInstance(getApplication()).realtimeSyncEnabled.collect { isEnabled ->
+                if (isEnabled) {
+                    ensureAuthAndListen()
+                } else {
+                    snapshotListenerRegistration?.remove()
+                    snapshotListenerRegistration = null
+                    loadOfflineCachedAnnouncements()
+                }
+            }
+        }
     }
 
     private fun ensureAuthAndListen() {
+        if (!AppPreferencesManager.getInstance(getApplication()).isRealtimeSyncEnabled()) {
+            snapshotListenerRegistration?.remove()
+            snapshotListenerRegistration = null
+            loadOfflineCachedAnnouncements()
+            return
+        }
         if (auth == null) {
             loadOfflineCachedAnnouncements()
             return
         }
         if (auth.currentUser == null) {
-            auth.signInAnonymously().addOnCompleteListener {
-                listenToAnnouncementsRealtime()
-            }
+            auth.signInAnonymously()
+                .addOnSuccessListener {
+                    listenToAnnouncementsRealtime()
+                }
+                .addOnFailureListener {
+                    listenToAnnouncementsRealtime()
+                }
         } else {
             listenToAnnouncementsRealtime()
         }
@@ -66,7 +95,7 @@ class AnnouncementViewModel(application: Application) : AndroidViewModel(applica
                         announcementDao.insertAnnouncements(realEntities)
                     }
                 }
-                _announcements.value = realEntities.map { it.toAnnouncement() }
+                _announcements.value = realEntities.map { it.toAnnouncement() }.sortedByDescending { it.date }
             } catch (e: Exception) {
                 Log.e("AnnouncementViewModel", "Error loading offline announcements", e)
             }
@@ -77,21 +106,10 @@ class AnnouncementViewModel(application: Application) : AndroidViewModel(applica
         snapshotListenerRegistration?.remove()
         if (announcementsCollection == null) return
         snapshotListenerRegistration = announcementsCollection
-            .orderBy("date", Query.Direction.DESCENDING)
             .addSnapshotListener { snapshot, error ->
                 if (error != null) {
                     Log.e("AnnouncementViewModel", "Error listening to Firestore announcements: ${error.localizedMessage}", error)
-                    if (auth == null || auth.currentUser == null) {
-                        try {
-                            auth?.signInAnonymously()?.addOnCompleteListener {
-                                listenToAnnouncementsRealtime()
-                            } ?: loadOfflineCachedAnnouncements()
-                        } catch (e: Exception) {
-                            loadOfflineCachedAnnouncements()
-                        }
-                    } else {
-                        loadOfflineCachedAnnouncements()
-                    }
+                    loadOfflineCachedAnnouncements()
                     return@addSnapshotListener
                 }
 
@@ -101,7 +119,13 @@ class AnnouncementViewModel(application: Application) : AndroidViewModel(applica
                             val id = doc.id
                             val title = doc.getString("title") ?: ""
                             val content = doc.getString("content") ?: ""
-                            val date = doc.getLong("date") ?: System.currentTimeMillis()
+                            val date = when (val rawDate = doc.get("date")) {
+                                is Long -> rawDate
+                                is Number -> rawDate.toLong()
+                                is Timestamp -> rawDate.seconds * 1000
+                                is String -> rawDate.toLongOrNull() ?: System.currentTimeMillis()
+                                else -> System.currentTimeMillis()
+                            }
                             val authorName = doc.getString("authorName") ?: ""
                             val authorRoleStr = doc.getString("authorRole") ?: UserRole.STUDENT.name
                             val authorRole = try {
@@ -129,7 +153,7 @@ class AnnouncementViewModel(application: Application) : AndroidViewModel(applica
                         } catch (e: Exception) {
                             null
                         }
-                    }
+                    }.sortedByDescending { it.date }
 
                     if (!isInitialLoad && list.isNotEmpty()) {
                         val currentFirstId = _announcements.value.firstOrNull()?.id
@@ -192,6 +216,15 @@ class AnnouncementViewModel(application: Application) : AndroidViewModel(applica
             authorId = userProfile.uid
         )
 
+        // Instant local update for immediate UI responsiveness
+        _announcements.value = listOf(newAnnouncement) + _announcements.value
+
+        viewModelScope.launch {
+            try {
+                announcementDao.insertAnnouncements(listOf(AnnouncementEntity.fromAnnouncement(newAnnouncement)))
+            } catch (e: Exception) {}
+        }
+
         val data = hashMapOf(
             "title" to newAnnouncement.title,
             "content" to newAnnouncement.content,
@@ -202,36 +235,13 @@ class AnnouncementViewModel(application: Application) : AndroidViewModel(applica
         )
 
         fun uploadToFirestore() {
-            if (announcementsCollection == null) {
-                viewModelScope.launch {
-                    try {
-                        announcementDao.insertAnnouncements(listOf(AnnouncementEntity.fromAnnouncement(newAnnouncement)))
-                        _announcements.value = listOf(newAnnouncement) + _announcements.value
-                    } catch (e: Exception) {}
-                }
-                return
-            }
+            if (announcementsCollection == null) return
             announcementsCollection.document(newId).set(data)
                 .addOnSuccessListener {
                     Log.d("AnnouncementViewModel", "Successfully posted announcement to Firestore: $newId")
-                    viewModelScope.launch {
-                        try {
-                            announcementDao.insertAnnouncements(listOf(AnnouncementEntity.fromAnnouncement(newAnnouncement)))
-                        } catch (e: Exception) {
-                            Log.e("AnnouncementViewModel", "Error saving announcement to local DB", e)
-                        }
-                    }
                 }
-                .addOnFailureListener { err ->
-                    Log.e("AnnouncementViewModel", "Failed to upload announcement to Firestore: ${err.localizedMessage}", err)
-                    viewModelScope.launch {
-                        try {
-                            announcementDao.insertAnnouncements(listOf(AnnouncementEntity.fromAnnouncement(newAnnouncement)))
-                            _announcements.value = listOf(newAnnouncement) + _announcements.value
-                        } catch (e: Exception) {
-                            Log.e("AnnouncementViewModel", "Error saving announcement locally", e)
-                        }
-                    }
+                .addOnFailureListener { e ->
+                    Log.e("AnnouncementViewModel", "Failed to upload announcement: ${e.localizedMessage}")
                 }
         }
 
@@ -272,5 +282,6 @@ class AnnouncementViewModel(application: Application) : AndroidViewModel(applica
     override fun onCleared() {
         super.onCleared()
         snapshotListenerRegistration?.remove()
+        try { auth?.removeAuthStateListener(authStateListener) } catch (e: Exception) {}
     }
 }
